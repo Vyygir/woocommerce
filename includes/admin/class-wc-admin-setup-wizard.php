@@ -1466,6 +1466,69 @@ class WC_Admin_Setup_Wizard {
 		<?php
 	}
 
+	protected function get_all_activate_errors() {
+		return array(
+			'default' => __( "Sorry! We tried, but we couldn't connect Jetpack just now 😭. Please go to the Plugins tab to connect Jetpack, so that you can finish setting up your store.", 'woocommerce' ),
+			'jetpack_cant_be_installed' => __( "Sorry! We tried, but we couldn't install Jetpack for you 😭. Please go to the Plugins tab to install it, and finish setting up your store.", 'woocommerce' ),
+			'jetpack_cant_be_activated' => __( "Sorry! We tried, but we couldn't activate Jetpack for you 😭. Please go to the Plugins tab to activate it, and finish setting up your store.", 'woocommerce' ),
+			'register_http_request_failed' => __( "Sorry! We couldn't contact Jetpack just now 😭. Please make sure that your site is visible over the internet, and that it accepts incoming and outgoing requests via curl. You can also try to connect to Jetpack again, and if you run into any more issues, please contact support.", 'woocommerce' ),
+			'siteurl_private_ip_dev' => __( "Whoops! We couldn't connect. Your site is probably on a private network. Jetpack can only connect to public sites. Please make sure your site is visible over the internet, and then try connecting again 🙏." , 'woocommerce' ),
+		);
+	}
+
+	protected function get_activate_error_message( $code = '' ) {
+		$errors = $this->get_all_activate_errors();
+		return array_key_exists( $code, $errors ) ? $errors[ $code ] : $errors['default'];
+	}
+
+	protected function install_and_activate_jetpack_sync() {
+		if ( ! current_user_can( 'install_plugins' ) ) {
+			return false;
+		}
+
+		include_once( ABSPATH . 'wp-admin/includes/plugin.php' );
+
+		// If Jetpack is not installed, install it.
+		if ( 0 !== validate_plugin( 'jetpack/jetpack.php' ) ) {
+
+			include_once( ABSPATH . '/wp-admin/includes/admin.php' );
+			include_once( ABSPATH . '/wp-admin/includes/plugin-install.php' );
+			include_once( ABSPATH . '/wp-admin/includes/class-wp-upgrader.php' );
+			include_once( ABSPATH . '/wp-admin/includes/class-plugin-upgrader.php' );
+
+			$api = plugins_api( 'plugin_information', array( 'slug' => 'jetpack' ) );
+
+			if ( is_wp_error( $api ) ) {
+				// TODO: log original error message
+				return 'jetpack_cant_be_installed';
+			}
+			$upgrader = new Plugin_Upgrader( new Automatic_Upgrader_Skin() );
+			$result = $upgrader->install( $api->download_link );
+
+			if ( true === $result ) {
+				// Continue with activation after successful install.
+				$this->install_and_activate_jetpack_sync();
+			} else {
+				// TODO: log original error message
+				return 'jetpack_cant_be_installed';
+			}
+		} else if ( ! class_exists( 'Jetpack' ) ) {
+			$result = activate_plugin( 'jetpack/jetpack.php' );
+
+			if ( is_null( $result ) ) {
+				// The function activate_plugin() returns NULL on success.
+				// Jetpack is installed & activated.
+				return true;
+			} else {
+				// TODO: log original error message
+				return 'jetpack_cant_be_activated';
+			}
+		} else {
+			// Jetpack is installed & activated.
+			return true;
+		}
+	}
+
 	/**
 	 * Activate step save.
 	 *
@@ -1478,19 +1541,21 @@ class WC_Admin_Setup_Wizard {
 		// This happens after the connection button is clicked
 		// and we waited for the pending install to finish.
 		delete_option( 'woocommerce_setup_queued_jetpack_install' );
-		// Determine if we need to install Jetpack synchronously here.
 
+		$result = $this->install_and_activate_jetpack_sync();
 
-		if ( ! class_exists( 'Jetpack' ) ) {
-			wp_redirect( esc_url_raw( add_query_arg( 'activate_error', 'install' ) ) );
+		if ( true !== $result ) {
+			wp_redirect( esc_url_raw( add_query_arg( 'activate_error', $result ) ) );
 			exit;
 		}
 
 		Jetpack::maybe_set_version_option();
-		$registered = Jetpack::try_registration();
+		$register_result = Jetpack::try_registration();
 
-		if ( is_wp_error( $registered ) ) {
-			wp_redirect( esc_url_raw( add_query_arg( 'activate_error', 'register' ) ) );
+		if ( is_wp_error( $register_result ) ) {
+			$result_error_code = $register_result->get_error_code();
+			$jetpack_error_code = array_key_exists( $result_error_code, $this->get_all_activate_errors() ) ? $result_error_code : 'register';
+			wp_redirect( esc_url_raw( add_query_arg( 'activate_error', $jetpack_error_code ) ) );
 			exit;
 		}
 
